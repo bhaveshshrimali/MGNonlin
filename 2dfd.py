@@ -13,6 +13,8 @@ fixme:
 
 import numpy as np
 import numpy.linalg as la
+import scipy.sparse as sp
+import scipy.sparse.linalg as sla
 import matplotlib.pyplot as plt
 from matplotlib import rc
 import matplotlib
@@ -44,7 +46,7 @@ my=AutoMinorLocator(10)
 ##################################################################
 class geometry() : #1D geometry
     def __init__(self,Eltype):
-        self.tolNR=1.e-8
+        self.tolNR=1.e-6
         if Eltype[0]=='L':
             self.A=8.e-1
             self.B=1.
@@ -57,18 +59,21 @@ class geometry() : #1D geometry
             self.Po=2.5e5*np.linspace(0,1,100)
             self.epS=2.*np.linspace(1,20,100)
         elif Eltype[0]=='Q':
-            self.xlength=2.
-            self.ylength=2.
+            self.xlength=2
+            self.ylength=2
             self.nx=1
             self.ny=1
+            nel = (self.nx-1)*(self.ny-1)
+            self.NE = nel
             self.nDim=2                                                        #No. of dof per node, it is essentially the dimension of the problem
             self.thck=1.
             self.nSteps=10
             self.mu=40.
             kap=1.e1*self.mu 
             self.lam=40.
-            self.tolNR=1.e-5
-            self.maxiter=20
+#            self.tolNR=1.e-10
+            self.maxiter=100
+            
 
 def meshgenerate(order):
     xs=0.;ys=0.;
@@ -156,35 +161,21 @@ class basis():  # defined on the canonical element (1D : [-1,1], 2D (Q): [-1,1] 
             dfN = Matrix(flatten(N.diff(xi))).col_join(Matrix(flatten(N.diff(eta)))) 
             self.Ns=lambdify((xi,eta),flatten(N),'numpy')
             self.dN=lambdify((xi,eta),dfN,'numpy')
-#            if deg==4.:
-#                xi=Symbol('xi');eta=Symbol('eta')
-#                arr1=1/2*Array([1-eta,1+eta]);arr2=1/2*Array([1-xi,1+xi])
-#                N=tensorproduct(arr1,arr2);
-#                dfN=Matrix(flatten(diff(N,xi))).col_join(Matrix(flatten(diff(N,eta))))
-#                self.Ns=lambdify((xi,eta),flatten(N),'numpy')
-#                self.dN=lambdify((xi,eta),dfN,'numpy')
-#            elif deg==9.:
-#                xi=Symbol('xi');eta=Symbol('eta')
-#                arr1=Array([eta*(eta-1)/2,(1-eta**2),eta*(eta+1)/2]);arr2=Array([xi*(xi-1)/2,(1-xi**2),xi*(xi+1)/2])
-#                N=tensorproduct(arr1,arr2);
-#                dfN=Matrix(flatten(diff(N,xi))).col_join(Matrix(flatten(diff(N,eta))))
-#                self.Ns=lambdify((xi,eta),flatten(N),'numpy')
-#                self.dN=lambdify((xi,eta),dfN,'numpy')
 
 class DWDIi():               
     def __init__(self,ndim):
-        I1=Symbol('I1');I2=Symbol('I2');J=Symbol('J');
-        W = 1/2*geom.mu*(I1-3)-geom.mu*log(J)+geom.lam/2*(J-1)**2               #change W here to include the modified Neo-Hookean
-        dWdI1=diff(W,I1);
-        dWdI2=diff(W,I2);
-        dWdJ=diff(W,J);
-        d2WdI12=diff(dWdI1,I1);
-        d2WdJ2=diff(dWdJ,J);
+        I1=Symbol('I1');J=Symbol('J');
+        W = 1/2.*geom.mu*(I1-2.)-geom.mu*log(J)+geom.lam/2.*(J-1.)**2               #change W here to include the modified Neo-Hookean
+        dWdI1=W.diff(I1,1)
+        dWdJ=W.diff(J,1)
+#        print(dWdJ)
+        d2WdI12=W.diff(I1,2);
+        d2WdJ2=W.diff(J,2);
         if ndim==2:
             f12=Symbol('f12');f11=Symbol('f11');f22=Symbol('f22');f21=Symbol('f21')
             f=Matrix([f11,f12,f21,f22]);
-            dWdI1=dWdI1.subs(I1,transpose(f).dot(f)) + 1.e-27 * f[0]                                           #substituting I1, in terms of 
-            d2WdI12=d2WdI12.subs(I1,transpose(f).dot(f)) + 1.e-27 * f[0]
+            dWdI1=dWdI1.subs(I1,transpose(f).dot(f)) + 1.e-32 * f[0]                                           #substituting I1, in terms of 
+            d2WdI12=d2WdI12.subs(I1,transpose(f).dot(f)) + 1.e-32 * f[0]
 #            dWdI2.subs(0.5*((transpose(f).dot(f)+f[0]**2)**2 
 #                            - (f[1]**2 + f[0]**2)**2 
 #                            + 2*f[0]**2*(f[1] 
@@ -217,6 +208,7 @@ def locmat(nodes,de):                     #local stiffness (jacobian) and force 
     gDshpL=np.array(B.dN(Xi,Eta)).reshape(geom.nDim,n_nodes_elem,-1)                  # local derivatives
 #    print(gDshpL[:,:,2])
     Je=np.einsum('ilk,lj->ijk',gDshpL,nodes.reshape(geom.nDim,-1).T)                  # computing the jacobian
+#    print(Je[:,:,0])
     detJ=np.dstack(la.det(Je[:,:,i]) for i in range(Xi.shape[0]))        # 1x1xNgP                  # try making it faster by removing the generator
     Jeinv=np.dstack(la.inv(Je[:,:,i]) for i in range(Xi.shape[0]))       # 3x3xNgP       #avoid computing inverse on a loop (--check ?)
     gDshpG=np.einsum('ilk,ljk->ijk',Jeinv,gDshpL)                                     #global derivatives  (remains the same, even for 3D ? )
@@ -246,7 +238,7 @@ def locmat(nodes,de):                     #local stiffness (jacobian) and force 
 #    FinvT = np.array([F[3],-F[2],-F[1],F[0]])/detF
 #    print('shape = ',np.array([F[3],-F[2],-F[1],F[0]]).shape)
 #    Helpful variables:     
-    S=WpI1*2*F+(WpJ*detF)*FinvT         # notice the swap of axes for transpose
+    S=WpI1*2.*F+(WpJ*detF)*FinvT         # notice the swap of axes for transpose
     fac=Wg*detJ*geom.thck
     S*=fac                                                                      # multiplying S by the determinant of the jacobian, thickness, and gauss-weights
     res=np.einsum('lik,ljk->ij',Bmat,S)                                         # double contraction along axis 1 and 2 (of B)
@@ -285,21 +277,37 @@ def locmat(nodes,de):                     #local stiffness (jacobian) and force 
                 [C1121,C1221,C2121,C2122],
                 [C1122,C1222,C2122,C2222]])
     
-#    print(C.shape)
     D=np.einsum('lik,lpk,pjk->ij',Bmat,C,Bmat)                                  #Check the multiplication once for a simple case!
     IntptGlob = np.einsum('ilj,l->ij',Nshp,nodes)
-#    print(la.norm(res))
     return D,res.flatten(),S,F,IntptGlob,Xi.shape[0]
-#    return {'K':D,
-#            'F':res.flatten(),
-#            'Stress':S,
-#            'DefGrad':F,
-#            'InptGlobal':np.einsum('ilj,l->ij',Nshp,nodes),
-#            'NGP':len(Xi)}
+
+def assembly(disp):
+    globK=0.*np.eye(disp.size)
+    globF=np.zeros(disp.size)
+#    strs = np.zeros((geom.NE,2,2,NGPts))
+#    DG = np.zeros((geom.NE,2,2,NGPts))
+#    intpt = strs.copy()
+    
+    for i in range(conVxy.shape[0]):
+        elnodes=conVxy[i]
+        globdof=np.array([2*elnodes,2*elnodes+1]).flatten()#.T.flatten()
+        nodexy=meshxy[elnodes]
+        locdisp=disp[globdof]
+        kel,fel,strs,DG,intpt,ngp=locmat(nodexy.T.flatten(),locdisp)
+#        print(intpt)
+        globK[np.ix_(globdof,globdof)] += kel
+        globF[globdof] += fel
+        
+#        calculate strains and integration point coordinates
+        Strn=(np.einsum('lik,ljk->ijk',DG.reshape(geom.nDim,geom.nDim,-1),DG.reshape(geom.nDim,geom.nDim,-1))-np.eye(geom.nDim).reshape(geom.nDim,geom.nDim,-1).repeat(ngp,axis=-1))/2
+    strs = strs.reshape(geom.nDim,geom.nDim,-1)
+    DG = DG.reshape(geom.nDim,geom.nDim,-1)
+    return globK,globF,strs,DG,Strn,intpt
 
 Eltype='Q1'
 n_nodes_elem = (int(Eltype[-1])+1)**2
 OrdGauss=2                                                                      #No. of Gauss-points (in 2D: # of points in each direction counted the same way as local nodes)
+NGPts = int(OrdGauss**2)
 geom=geometry(Eltype)
 B=basis(Eltype[0],float(Eltype[1]))
 GP=GPXi(OrdGauss) 
@@ -310,114 +318,55 @@ identify_nodeBC = node_sets_bc(meshxy,conVxy)
 dof=1.e9*np.ones(meshxy.size) #initializing dofs (displacement of nodes)
 intpt=([])
 
-def assembly(disp):
-    globK=0.*np.eye(disp.size)
-    globF=np.zeros(disp.size)
-    for i in range(conVxy.shape[0]):
-        elnodes=conVxy[i]
-        globdof=np.array([2*elnodes,2*elnodes+1]).flatten()#.T.flatten()
-#        print(globdof)
-        nodexy=meshxy[elnodes]
-        locdisp=disp[globdof]
-#        print(locdisp)
-        kel,fel,strs,DG,intpt,ngp=locmat(nodexy.T.flatten(),locdisp)
-        globK[np.ix_(globdof,globdof)] += kel
-        globF[globdof] += fel
-#        print(globF)
-#        strs=locmat(nodexy.T.flatten(),locdisp)['Stress']
-#        DG=locmat(nodexy.T.flatten(),locdisp)['DefGrad']
-#        calculate strains and integration point coordinates
-#        ngp=locmat(nodexy.T.flatten(),locdisp)['NGP']
-        Strn=(np.einsum('lik,ljk->ijk',DG.reshape(geom.nDim,geom.nDim,-1),DG.reshape(geom.nDim,geom.nDim,-1))-np.eye(geom.nDim).reshape(geom.nDim,geom.nDim,-1).repeat(ngp,axis=-1))/2
-#        intpt.append(locmat(nodexy.T.flatten(),locdisp)['InptGlobal'])
-    strs = strs.reshape(geom.nDim,geom.nDim,-1)
-    DG = DG.reshape(geom.nDim,geom.nDim,-1)
-    return globK,globF,strs,DG,Strn,intpt
-#    return {'Jac':globK,
-#            'rhs':globF,
-#            'S':strs.reshape(geom.nDim,geom.nDim,-1),
-#            'F':DG.reshape(geom.nDim,geom.nDim,-1),
-#            'E':Strn,
-#            'IntP':intpt}
-        
-#def bcassign(nodes):
-#    dofpres=np.array([[1.,1,1,0.02*geom.ylength],
-#                      [0.,1,1,0.02*geom.ylength]])    #xcoor,ycoor,dir (x:0, y:1),val 
 
-# Change 
 dofs_top_y = 2*identify_nodeBC.nodes_top_idx+1
-
-dofs_bottom_left = np.hstack((2*identify_nodeBC.nodes_bottom_left_idx,
-                          2*identify_nodeBC.nodes_bottom_left_idx+1))
-
-dofs_bottom_right_y = 2*identify_nodeBC.nodes_bottom_right_idx+1
-
-dofs_bottom = np.hstack((dofs_bottom_left,dofs_bottom_right_y)) 
-pres_dofs = np.hstack((dofs_top_y,dofs_bottom_left,dofs_bottom_right_y)).T
+#dofs_bottom_left = np.hstack((2*identify_nodeBC.nodes_bottom_left_idx,
+#                          2*identify_nodeBC.nodes_bottom_left_idx+1))
+dofs_bottom_left_x = 2*identify_nodeBC.nodes_bottom_left_idx
+dofs_bottom_right_y = 2*identify_nodeBC.nodes_bottom_idx+1
+dofs_bottom = np.hstack((dofs_bottom_left_x,dofs_bottom_right_y)) 
+pres_dofs = np.hstack((dofs_top_y,dofs_bottom)).T
 num_pres_dof = pres_dofs.size 
-
-dofs_top_yval = 0.002*geom.ylength*np.ones(dofs_top_y.size)
+dofs_top_yval = .0005*geom.ylength*np.ones(dofs_top_y.size)
 pres_dofs_top = np.vstack((dofs_top_y,dofs_top_yval)).T
 pres_dofs_bottom = np.vstack((dofs_bottom,0*dofs_bottom)).T
-
-
 prescribed_dofs = np.vstack((pres_dofs_top,pres_dofs_bottom))
-#prescribed_dofs=np.vstack((pres_dofs,np.zeros(num_pres_dof))).T
 
-#prescribed_dofs[dofs_top_y,1] = 0.02*geom.ylength
-#prescribed_dofs=np.array([[0,0.],
-#                          [1,0],
-##                          [7,0],
-#                          [13,0],
-#                          [5,0.02*geom.ylength],
-#                          [11,0.02*geom.ylength],
-#                          [17,0.02*geom.ylength]])
 lineardof = np.zeros(dof.size)
 lineardof[(prescribed_dofs[:,0]).astype(int)]=prescribed_dofs[:,1]
 dof[(prescribed_dofs[:,0]).astype(int)]=0
 fdof=dof==1.e9                          #free dofs flags: further initialization to zeros needed only for the first step 
 nfdof=np.invert(fdof)                   #fixed dofs flags
 dof[fdof]=0.
-#lineardof[fdof] 
-#Collect the linear stiffness / force - vector for reference to solve a linear problem
 
+#Collect the linear stiffness / force - vector for reference to solve a linear problem
 Ks,Fs,_,_,_,Gauss_pt_global = assembly(lineardof)
 lineardof[fdof]=la.solve(Ks[np.ix_(fdof,fdof)],-Ks[np.ix_(fdof,nfdof)] @ lineardof[nfdof])
 Gauss_pt_global=Gauss_pt_global[0].T
-#Ks=assembly(dof.reshape(-1,2).T.flatten())['Jac'] 
 dofstore=np.zeros(dof.shape)
-#Fs=assembly(dof.reshape(-1,2).T.flatten())['rhs']
-#intpt1=assembly(dof)['IntP'][0].T
-DfGrn=([]);Strs=([]);LagStrain=([]);
-for i in range(10):
+
+DfGrn=([]);Strs=([]);LagStrain=([])
+for i in range(geom.nSteps):
+    print('Step: ',i)
     dof[(prescribed_dofs[:,0]).astype(int)]=(i+1)/(geom.nSteps)*prescribed_dofs[:,1]
-    Ks1,Fs1,_,_,_,_ = assembly(dof)
+    Ks1,Fs1,strs,DG,Es,_ = assembly(dof)
     normres0=la.norm(Fs1[fdof],2)
     normres = normres0.copy()
     iterNR=0
-    while normres >= geom.tolNR*normres0: 
+    while normres >= geom.tolNR:#* normres0:# and iterNR <= geom.maxiter: 
         print('Iter: {}'.format(iterNR))
         del_dof =  la.solve(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof])                #external force add (-- not required here, only for this case though)
         dof[fdof] += del_dof.copy() 
-        Ks1,Fs1_,_,_,_,_ = assembly(dof)
+        Ks1,Fs1,strs,DG,Es,_ = assembly(dof)
         normres=la.norm(Fs1[fdof],2)
-        print(normres)
+#        print(la.norm(Fs1[fdof]))
         iterNR += 1
-        if iterNR==geom.maxiter: 
-            break
-    Strs.append(assembly(dof)[2])
-    DfGrn.append(assembly(dof)[3])
-    LagStrain.append(assembly(dof)[4])
+    Strs.append(strs)
+    DfGrn.append(DG)
+    LagStrain.append(Es)
     dofstore=np.vstack((dofstore,dof))
 dofstore = dofstore.T
 DfGrn=np.array(DfGrn);LagStrain=np.array(LagStrain);Strs=np.array(Strs)
-plt.figure(figsize=(8,8))
-plt.tricontourf(meshxy[:,0],meshxy[:,1],dof[np.arange(1,dof.size,2)])
-plt.colorbar()
-#from scipy.interpolate import interp2d
-#iobd=interp2d(meshxy.T.flatten()[:4],
-#             meshxy.T.flatten()[4:],
-#             dof[np.array([1,3,5,7])])
-#plt.contourf(iobd(meshxy.T.flatten()[:4],
-#             meshxy.T.flatten()[4:]),extent=(0,2,0,2))
+#plt.figure(figsize=(8,8))
+#plt.tricontourf(meshxy[:,0],meshxy[:,1],dof[np.arange(1,dof.size,2)])
 #plt.colorbar()
