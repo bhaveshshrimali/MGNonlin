@@ -462,6 +462,12 @@ def FESolver2D(numelx,numely,problemtype):
  
         return prescribed_dofs
     
+    
+    def NewtMG(A,b,mlType):                #mlType is from PyAMG (smoothed_aggregation solver, adaptive_sa_solver, classical_RS)
+
+        if mkType is None : 
+            ml = pmg.smoothed_aggregation_solver(A)
+    
     Eltype='Q1'
     n_nodes_elem = (int(Eltype[-1])+1)**2
     OrdGauss=8                                                                      #No. of Gauss-points (in 2D: # of points in each direction counted the same way as local nodes)
@@ -491,9 +497,9 @@ def FESolver2D(numelx,numely,problemtype):
     Gauss_pt_global=Gauss_pt_global[0].T
     dofstore=np.zeros(dof.shape)
     
-    DfGrn=np.zeros((geom.nSteps,conVxy.shape[0],4,NGPts));
-    DfGrn[:,:,[0,-1],:]=1.
-    Strs=np.zeros((geom.nSteps,conVxy.shape[0],4,NGPts));
+    DfGrn=np.zeros((geom.nSteps+1,conVxy.shape[0],4,NGPts));
+    DfGrn[0,:,[0,-1],:]=1.
+    Strs=np.zeros((geom.nSteps+1,conVxy.shape[0],4,NGPts));
     
     residualStep = []
     flag=True
@@ -510,12 +516,12 @@ def FESolver2D(numelx,numely,problemtype):
         while normres >= geom.tolNR* normres0 and iterNR <= geom.maxiter: 
     #        print('Iter: {}'.format(iterNR))
             res=[]
-            Bvec = np.ones((Ks1[np.ix_(fdof,fdof)].shape[0],1))
-            smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
-            ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
-                                           smooth=smooth)
+#            Bvec = np.ones((Ks1[np.ix_(fdof,fdof)].shape[0],1))
+#            smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
+#            ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
+#                                           smooth=smooth)
             
-    #        ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)],max_levels=20)
+            ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)],max_levels=20)
             del_dof = ml.solve(-Fs1[fdof],-Fs1[fdof],tol=1.e-9,residuals=res)        #np.random.random(Ks1[np.ix_(fdof,fdof)].shape[0])
 #            del_dof =  sla.spsolve(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof])                #external force add (-- not required here, only for this case though)
             dof[fdof] += del_dof.copy() 
@@ -527,10 +533,10 @@ def FESolver2D(numelx,numely,problemtype):
             resNewton.append(res)
     #        print(la.norm(Fs1[fdof]))
             iterNR += 1
-        
+
             
-        Strs[i,:,:,:] = strs.copy()
-        DfGrn[i,:,:,:] = DG.copy()
+        Strs[i+1,:,:,:] = strs.copy()
+        DfGrn[i+1,:,:,:] = DG.copy()
     #    LagStrain.append(Es)
         dofstore=np.vstack((dofstore,dof))
         residualStep.append(resNewton)
@@ -549,6 +555,8 @@ if __name__ == '__main__':
 #    dofstore,Strs,DfGrn,meshxy,conv_VTK = FESolver2D(32,32,'UT_fixed_base')
 #    check_norm=la.norm(DfGrn[-1,:,-1,:].flatten()-1.5,2)
     import pickle as pckl
+    from time import time 
+    
     
     
     N_ELEM_X = 10
