@@ -585,7 +585,7 @@ def FESolver2D(numelx,numely,problemtype):
     # with open('alldata.pkl','wb') as fil:
         # pckl.dump(residualStep,fil)
         
-    return dofstore,Strs,DfGrn,meshxy,conv_VTK,tuple(timeAssemb,timeStep,residualStep)
+    return dofstore,Strs,DfGrn,meshxy,conv_VTK,zip(timeAssemb,timeStep,residualStep)
 
 
 if __name__ == '__main__':
