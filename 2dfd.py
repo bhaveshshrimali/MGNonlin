@@ -17,7 +17,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as sla
 import matplotlib
 from matplotlib import rc
-matplotlib.use('TkAgg')
+# matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
 
@@ -32,7 +32,6 @@ from scipy.integrate import solve_bvp  #verify the FEM solution
 from scipy.interpolate import griddata
 from sympy import Symbol,diff,lambdify,log,transpose,Matrix,flatten,Array,tensorproduct
 import pyamg as pmg
-#from sympy import Symbol,diff,Array,lambdify,tensorproduct,Matrix,flatten
 
 ##################################################################
 rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
@@ -78,7 +77,7 @@ def FESolver2D(numelx,numely,problemtype):
                 self.NE = nel
                 self.nDim=2                                                        #No. of dof per node, it is essentially the dimension of the problem
                 self.thck=1.
-                self.nSteps=10
+                self.nSteps=250
                 self.mu=40.
                 kap=1.e1*self.mu 
                 self.lam=40.
@@ -100,6 +99,14 @@ def FESolver2D(numelx,numely,problemtype):
         connectivity=np.vstack((col1,col1+geom.ny+1,col1+1,col1+geom.ny+2)).T-1
         return {'msh':mesh,
                 'connv':connectivity}
+    
+          
+    def lag_basis(k,z,Xi):
+        n = 1.
+        for i in range(len(Xi)):
+            if k != i:
+                n *= (z-Xi[i])/(Xi[k]-Xi[i])
+        return n    
     
     class node_sets_bc():
         def __init__(self,mesh,connectivity):
@@ -126,16 +133,7 @@ def FESolver2D(numelx,numely,problemtype):
                                                     select_nodes[abs(mesh[:,1] - ytop ) <= 1.e-15])
             
             self.nodes_bottom_left_idx = np.intersect1d(select_nodes[abs(mesh[:,0] - xleft ) <= 1.e-15],
-                                                    select_nodes[abs(mesh[:,1] - ybottom ) <= 1.e-15])
-    
-          
-    def lag_basis(k,z,Xi):
-        n = 1.
-        for i in range(len(Xi)):
-            if k != i:
-                n *= (z-Xi[i])/(Xi[k]-Xi[i])
-        return n    
-                   
+                                                    select_nodes[abs(mesh[:,1] - ybottom ) <= 1.e-15])               
     class GPXi():
         def __init__(self,ordr):
             from numpy.polynomial.legendre import leggauss  #Gauss-Legendre Quadrature for 1D (proxy 2D quads -- check, 3D hex -- not checked)
@@ -303,16 +301,6 @@ def FESolver2D(numelx,numely,problemtype):
             +detF*np.einsum('jig,klg->ijklg',Finv2b2,DFDWDJ)+WpJ*(detF*np.einsum('jig,lkg->ijklg',Finv2b2,Finv2b2)
             -detF*np.einsum('jkg,lig->ijklg',Finv2b2,Finv2b2))).reshape(4,4,-1,order='A')
 
-
-
-
-        
-        
-        
-        
-        
-        
-        
         
 #        C1111=4*WppI1*F11*F11+2*WpI1+detF**2*WppJ*Finv[0]**2                                             #scalar addition to multi-dimensional array (--check??) 
 #        C1112=4*WppI1*F11*F12+detF**2*WppJ*Finv[0]*Finv[2]
@@ -463,10 +451,56 @@ def FESolver2D(numelx,numely,problemtype):
         return prescribed_dofs
     
     
-    def NewtMG(A,b,mlType):                #mlType is from PyAMG (smoothed_aggregation solver, adaptive_sa_solver, classical_RS)
-
-        if mkType is None : 
-            ml = pmg.smoothed_aggregation_solver(A)
+    def NewtMG(A,b,times=None,mlType=None,method=0):                #mlType is from PyAMG (smoothed_aggregation solver, adaptive_sa_solver, classical_RS)
+        res=[]
+        if mlType is None: 
+            if method == 0:
+                t0 = time()
+                ml = pmg.smoothed_aggregation_solver(A,max_coarse=20)
+                times.append(time()-t0)
+                t1 = time()
+                x = ml.solve(b,b,residuals=res)
+                times.append(time()-t1)
+            elif method == 1:
+                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+                Bvec = np.vstack((Bx,By)).T
+                smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
+                t0 = time()
+                ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
+                                           smooth=smooth)
+                times.append(time()-t0)
+                t1 = time()
+                x= ml.solve(b,b,tol=1.e-8,maxiter=100,residuals=res)
+                times.append(time()-t1)
+        
+        elif mlType is 'RS':
+            if method == 0:
+                ml = pmg.smoothed_aggregation_solver(A,max_coarse=20)
+                x = ml.solve(b,b,residuals=res)
+            elif method == 1:
+                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+                Bvec = np.vstack((Bx,By)).T
+                smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
+                ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
+                                           smooth=smooth)
+                x =  ml.solve(b,b,tol=1.e-8,maxiter=100,residuals=res)
+        
+        elif mlType is 'AsA':
+            if method == 0:
+                ml = pmg.smoothed_aggregation_solver(A,max_coarse=20)
+                x =  ml.solve(b,b,residuals=res)
+            elif method == 1:
+                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+                Bvec = np.vstack((Bx,By)).T
+                smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
+                ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
+                                           smooth=smooth)
+                x =  ml.solve(b,b,tol=1.e-8,maxiter=100,residuals=res)
+        return x,res    
+    
     
     Eltype='Q1'
     n_nodes_elem = (int(Eltype[-1])+1)**2
@@ -477,13 +511,11 @@ def FESolver2D(numelx,numely,problemtype):
     GP=GPXi(OrdGauss) 
     dWdIi=DWDIi(geom.nDim)
     meshxy=meshgenerate(1)['msh']
-#    print(meshxy.shape)
     conVxy=meshgenerate(1)['connv']
     identify_nodeBC = node_sets_bc(meshxy,conVxy)
-    dof=-np.inf*np.ones(meshxy.size) #initializing dofs (displacement of nodes)
-#    intpt=([])
+    dof=-np.inf*np.ones(meshxy.size)                        #initializing dofs (displacement of nodes)
     prescribed_dofs = assignbc(problemtype)
-    print(prescribed_dofs.shape)
+    # print(prescribed_dofs.shape)
     lineardof = np.zeros(dof.size)
     lineardof[(prescribed_dofs[:,0]).astype(int)]=prescribed_dofs[:,1]
     dof[(prescribed_dofs[:,0]).astype(int)]=0
@@ -502,44 +534,42 @@ def FESolver2D(numelx,numely,problemtype):
     Strs=np.zeros((geom.nSteps+1,conVxy.shape[0],4,NGPts));
     
     residualStep = []
+    timeStep = []
     flag=True
     for i in range(geom.nSteps):
         print('Step: ',i)
         dof[(prescribed_dofs[:,0]).astype(int)]=(i+1)/(geom.nSteps)*prescribed_dofs[:,1]
+        t0 = time()
         Ks1,Fs1,_,_,_ = assembly(dof)
+        timeStep.append(time()-t0)
 #        print(la.norm(dof,np.inf))
 #        print(la.cond(Ks1[np.ix_(fdof,fdof)].todense()))
         normres0=la.norm(Fs1[fdof],2)
         normres = normres0.copy()
         iterNR=0
         resNewton = []
+        timeNewton = []
         while normres >= geom.tolNR* normres0 and iterNR <= geom.maxiter: 
     #        print('Iter: {}'.format(iterNR))
-            res=[]
-#            Bvec = np.ones((Ks1[np.ix_(fdof,fdof)].shape[0],1))
-#            smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
-#            ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
-#                                           smooth=smooth)
             
-            ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)],max_levels=20)
-            del_dof = ml.solve(-Fs1[fdof],-Fs1[fdof],tol=1.e-9,residuals=res)        #np.random.random(Ks1[np.ix_(fdof,fdof)].shape[0])
-#            del_dof =  sla.spsolve(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof])                #external force add (-- not required here, only for this case though)
+            del_dof,res = NewtMG(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof],times=timeNewton,method=1)
             dof[fdof] += del_dof.copy() 
             Ks1,Fs1,strs,DG,_ = assembly(dof)
             normres=la.norm(Fs1[fdof],np.inf)
             print('Residual Norm: {}   Iter: {}   LoadStep: {}'.format(normres,iterNR+1,i+1))
             if normres >= 1.e6:
+                print(r'Load Step too large: Newton diverging')
                 break
             resNewton.append(res)
     #        print(la.norm(Fs1[fdof]))
             iterNR += 1
-
-            
+     
         Strs[i+1,:,:,:] = strs.copy()
         DfGrn[i+1,:,:,:] = DG.copy()
     #    LagStrain.append(Es)
         dofstore=np.vstack((dofstore,dof))
         residualStep.append(resNewton)
+        timeStep.append(timeNewton)
         if normres >= 1.e6:
             flag==False
             break
@@ -558,10 +588,9 @@ if __name__ == '__main__':
     from time import time 
     
     
-    
-    N_ELEM_X = 10
-    N_ELEM_Y = 10
-    BC_TYPE = 'UT_mod'
+    N_ELEM_X = 32
+    N_ELEM_Y = 32
+    BC_TYPE = 'UC_fixed_base'
     W_TYPE = 0
     dofstore,Strs,DfGrn,meshxy,conv_VTK = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE)
 
