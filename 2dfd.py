@@ -77,7 +77,7 @@ def FESolver2D(numelx,numely,problemtype):
                 self.NE = nel
                 self.nDim=2                                                        #No. of dof per node, it is essentially the dimension of the problem
                 self.thck=1.
-                self.nSteps=250
+                self.nSteps=20
                 self.mu=40.
                 kap=1.e1*self.mu 
                 self.lam=40.
@@ -333,11 +333,13 @@ def FESolver2D(numelx,numely,problemtype):
         IntptGlob = np.einsum('ilj,l->ij',Nshp,nodes)
         return D,res.flatten(),S.squeeze(),F.squeeze(),IntptGlob,Xi.shape[0]
     
-    def assembly(disp):
+    def assembly(disp,times=None):
         globK=sp.lil_matrix(1.e-17*np.eye(disp.size))
         globF=np.zeros(disp.size)
         S_pk = np.zeros((conVxy.shape[0],4,NGPts))    #First PK-Stress
         DefGrad = np.zeros((conVxy.shape[0],4,NGPts))    #Deformation Gradient 
+        if times is not None:
+            t0 = time()
         for i in range(conVxy.shape[0]):
             elnodes=conVxy[i]
             globdof=np.array([2*elnodes,2*elnodes+1]).flatten()#.T.flatten()
@@ -352,6 +354,8 @@ def FESolver2D(numelx,numely,problemtype):
     #        Strn=(np.einsum('lik,ljk->ijk',DG.reshape(geom.nDim,geom.nDim,-1),DG.reshape(geom.nDim,geom.nDim,-1))-np.eye(geom.nDim).reshape(geom.nDim,geom.nDim,-1).repeat(ngp,axis=-1))/2
     #    strs = strs.reshape(geom.nDim,geom.nDim,-1)
     #    DG = DG.reshape(geom.nDim,geom.nDim,-1)
+        if times is not None:
+            times.append(time()-t0)    
         globK = globK.tocsr().copy()
         return globK,globF,S_pk,DefGrad,intpt
 
@@ -535,13 +539,13 @@ def FESolver2D(numelx,numely,problemtype):
     
     residualStep = []
     timeStep = []
+    timeAssemb = []
     flag=True
     for i in range(geom.nSteps):
         print('Step: ',i)
         dof[(prescribed_dofs[:,0]).astype(int)]=(i+1)/(geom.nSteps)*prescribed_dofs[:,1]
-        t0 = time()
         Ks1,Fs1,_,_,_ = assembly(dof)
-        timeStep.append(time()-t0)
+        
 #        print(la.norm(dof,np.inf))
 #        print(la.cond(Ks1[np.ix_(fdof,fdof)].todense()))
         normres0=la.norm(Fs1[fdof],2)
@@ -549,12 +553,13 @@ def FESolver2D(numelx,numely,problemtype):
         iterNR=0
         resNewton = []
         timeNewton = []
+        assemb_time = []
         while normres >= geom.tolNR* normres0 and iterNR <= geom.maxiter: 
     #        print('Iter: {}'.format(iterNR))
             
             del_dof,res = NewtMG(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof],times=timeNewton,method=1)
             dof[fdof] += del_dof.copy() 
-            Ks1,Fs1,strs,DG,_ = assembly(dof)
+            Ks1,Fs1,strs,DG,_ = assembly(dof,times=assemb_time)
             normres=la.norm(Fs1[fdof],np.inf)
             print('Residual Norm: {}   Iter: {}   LoadStep: {}'.format(normres,iterNR+1,i+1))
             if normres >= 1.e6:
@@ -566,19 +571,21 @@ def FESolver2D(numelx,numely,problemtype):
      
         Strs[i+1,:,:,:] = strs.copy()
         DfGrn[i+1,:,:,:] = DG.copy()
+        
     #    LagStrain.append(Es)
         dofstore=np.vstack((dofstore,dof))
         residualStep.append(resNewton)
         timeStep.append(timeNewton)
+        timeAssemb.append(assemb_time)
         if normres >= 1.e6:
             flag==False
             break
     dofstore = dofstore.T
     conv_VTK = conVxy[:,[0,1,3,2]]
-    with open('alldata.pkl','wb') as fil:
-        pckl.dump(residualStep,fil)
+    # with open('alldata.pkl','wb') as fil:
+        # pckl.dump(residualStep,fil)
         
-    return dofstore,Strs,DfGrn,meshxy,conv_VTK
+    return dofstore,Strs,DfGrn,meshxy,conv_VTK,tuple(timeAssemb,timeStep,residualStep)
 
 
 if __name__ == '__main__':
@@ -590,9 +597,9 @@ if __name__ == '__main__':
     
     N_ELEM_X = 32
     N_ELEM_Y = 32
-    BC_TYPE = 'UC_fixed_base'
+    BC_TYPE = 'UT'
     W_TYPE = 0
-    dofstore,Strs,DfGrn,meshxy,conv_VTK = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE)
+    dofstore,Strs,DfGrn,meshxy,conv_VTK,time_res = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE)
 
     import os
     FOLDER_NAME = '{0}_{1}_{2}'.format(W_TYPE, N_ELEM_X * N_ELEM_Y, BC_TYPE)
@@ -600,7 +607,9 @@ if __name__ == '__main__':
     os.makedirs(os.path.join(os.getcwd(), REL_PATH), exist_ok=True)
     np.savez('data/{0}/all_data'.format(FOLDER_NAME),
         dofstore=dofstore, Strs=Strs, DfGrn=DfGrn, meshxy=meshxy, conv_VTK=conv_VTK)
-
+    
+    with open('AlldatMod.pkl','wb') as filname:
+        pckl.dump(time_res,filname)
 #DfGrn=np.array(DfGrn);LagStrain=np.array(LagStrain);Strs=np.array(Strs)
 #if flag:
 #    for idx,resx in enumerate(residualStep):
