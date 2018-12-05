@@ -69,7 +69,7 @@ def FESolver2D(numelx,numely,problemtype):
                 self.epS=2.*np.linspace(1,20,100)
             elif Eltype[0]=='Q':
                 self.xlength=10
-                self.alph = 1.
+                self.alph = 5.
                 self.ylength=10
                 self.nx=numelx
                 self.ny=numely
@@ -77,12 +77,12 @@ def FESolver2D(numelx,numely,problemtype):
                 self.NE = nel
                 self.nDim=2                                                        #No. of dof per node, it is essentially the dimension of the problem
                 self.thck=1.
-                self.nSteps=20
+                self.nSteps=100
                 self.mu=40.
                 kap=1.e1*self.mu 
-                self.lam=40.
+                self.lam=400.
     #            self.tolNR=1.e-10
-                self.maxiter=50
+                self.maxiter=11
                 
     
     def meshgenerate(order):
@@ -191,10 +191,12 @@ def FESolver2D(numelx,numely,problemtype):
     #                               + f[2]**2)**2 ))           # cannot get expression of I2 directly in terms of vector representation of F
                 dWdJ=dWdJ.subs(J,f[0]*f[3]-f[1]*f[2]) + 1.e-32 * f[0]
                 d2WdJ2=d2WdJ2.subs(J,f[0]*f[3]-f[1]*f[2]) + 1.e-32 * f[0]
+                Wen = W.subs([(I1,transpose(f).dot(f)),(J,f[0]*f[3]-f[1]*f[2])])
                 self.DWDI1=lambdify(f,dWdI1,'numpy')
                 self.DWDJ=lambdify(f,dWdJ,'numpy')            #output the derivative of invariants at the given F (input) as lambda function
                 self.D2WDI12=lambdify(f,d2WdI12,'numpy')
                 self.D2WDJ2=lambdify(f,d2WdJ2,'numpy')
+                self.Wenergy = lambdify(f,Wen)
     
     
     def locmat(nodes,de):                     #local stiffness (jacobian) and force (residual) over the reference element
@@ -252,6 +254,7 @@ def FESolver2D(numelx,numely,problemtype):
         WppJ = np.einsum('kji',WppJ)
         
         
+        
     #    Finv=np.array([F[3],-F[1],-F[2],F[0]])/detF                                 # avoid computing inverse on the loop for the deformation gradient    
     #    FinvT = np.array([F[3],-F[2],-F[1],F[0]])/detF
     #    print('shape = ',np.array([F[3],-F[2],-F[1],F[0]]).shape)
@@ -270,7 +273,13 @@ def FESolver2D(numelx,numely,problemtype):
         F = (F11,F12,f21,F22).T
         """
         F2b2 = F.reshape(geom.nDim,geom.nDim,-1)
+        
         I1f=np.einsum('ijk,ijk->k',F2b2,F2b2)
+        Wen = dWdIi.Wenergy(*F).squeeze()
+        
+        Wen_total = (Wg*detJ*geom.thck*Wen).sum() 
+        # print(Wen_total)
+        
         FinvT2b2=np.einsum('ijk->jik',Finv.reshape(geom.nDim,geom.nDim,-1))
         Finv2b2 = np.einsum('jik',FinvT2b2) 
 #        F11=F[0];F12=F[1];F21=F[2];F22=F[3]
@@ -331,13 +340,14 @@ def FESolver2D(numelx,numely,problemtype):
         
         D=np.einsum('lik,lpk,pjk->ij',Bmat,C*fac,Bmat)                                  #Check the multiplication once for a simple case!
         IntptGlob = np.einsum('ilj,l->ij',Nshp,nodes)
-        return D,res.flatten(),S.squeeze(),F.squeeze(),IntptGlob,Xi.shape[0]
+        return D,res.flatten(),S.squeeze(),F.squeeze(),IntptGlob,Xi.shape[0],Wen_total
     
     def assembly(disp,times=None):
         globK=sp.lil_matrix(1.e-17*np.eye(disp.size))
         globF=np.zeros(disp.size)
         S_pk = np.zeros((conVxy.shape[0],4,NGPts))    #First PK-Stress
         DefGrad = np.zeros((conVxy.shape[0],4,NGPts))    #Deformation Gradient 
+        W = 0.
         if times is not None:
             t0 = time()
         for i in range(conVxy.shape[0]):
@@ -346,10 +356,11 @@ def FESolver2D(numelx,numely,problemtype):
 #            print(elnodes)
             nodexy=meshxy[elnodes]
             locdisp=disp[globdof]
-            kel,fel,S_pk[i,:,:],DefGrad[i,:,:],intpt,ngp=locmat(nodexy.T.flatten(),locdisp)
+            kel,fel,S_pk[i,:,:],DefGrad[i,:,:],intpt,ngp,energy=locmat(nodexy.T.flatten(),locdisp)
     #        print(intpt)
             globK[np.ix_(globdof,globdof)] += kel
             globF[globdof] += fel
+            W += energy
     #        calculate strains and integration point coordinates
     #        Strn=(np.einsum('lik,ljk->ijk',DG.reshape(geom.nDim,geom.nDim,-1),DG.reshape(geom.nDim,geom.nDim,-1))-np.eye(geom.nDim).reshape(geom.nDim,geom.nDim,-1).repeat(ngp,axis=-1))/2
     #    strs = strs.reshape(geom.nDim,geom.nDim,-1)
@@ -357,7 +368,7 @@ def FESolver2D(numelx,numely,problemtype):
         if times is not None:
             times.append(time()-t0)    
         globK = globK.tocsr().copy()
-        return globK,globF,S_pk,DefGrad,intpt
+        return globK,globF,S_pk,DefGrad,intpt,W
 
     def assignbc(p_type):
         if p_type == 'UT':
@@ -442,8 +453,8 @@ def FESolver2D(numelx,numely,problemtype):
 
             dof_bottom_y = 2*identify_nodeBC.nodes_bottom_idx+1
             mid_node_bottom = identify_nodeBC.nodes_bottom_idx.size//2
-            print(identify_nodeBC.nodes_bottom_idx)
-            print(identify_nodeBC.nodes_bottom_idx[mid_node_bottom])
+            # print(identify_nodeBC.nodes_bottom_idx)
+            # print(identify_nodeBC.nodes_bottom_idx[mid_node_bottom])
             dof_bottom_mid_x = 2*identify_nodeBC.nodes_bottom_idx[mid_node_bottom]
 #            dof_bottom_x = 2*identify_nodeBC.nodes_bottom_idx
             dofs_bottom = np.hstack((dof_bottom_mid_x,dof_bottom_y)) 
@@ -508,7 +519,7 @@ def FESolver2D(numelx,numely,problemtype):
     
     Eltype='Q1'
     n_nodes_elem = (int(Eltype[-1])+1)**2
-    OrdGauss=8                                                                      #No. of Gauss-points (in 2D: # of points in each direction counted the same way as local nodes)
+    OrdGauss=2                                                                      #No. of Gauss-points (in 2D: # of points in each direction counted the same way as local nodes)
     NGPts = int(OrdGauss**2)
     geom=geometry(Eltype)
     B=basis(Eltype[0],float(Eltype[1]))
@@ -520,17 +531,18 @@ def FESolver2D(numelx,numely,problemtype):
     dof=-np.inf*np.ones(meshxy.size)                        #initializing dofs (displacement of nodes)
     prescribed_dofs = assignbc(problemtype)
     # print(prescribed_dofs.shape)
-    lineardof = np.zeros(dof.size)
-    lineardof[(prescribed_dofs[:,0]).astype(int)]=prescribed_dofs[:,1]
+    # lineardof = np.zeros(dof.size)
+    # lineardof[(prescribed_dofs[:,0]).astype(int)]=prescribed_dofs[:,1]
     dof[(prescribed_dofs[:,0]).astype(int)]=0
     fdof=dof==-np.inf                       #free dofs flags: further initialization to zeros needed only for the first step 
-    nfdof=np.invert(fdof)                   #fixed dofs flags
+    # nfdof=np.invert(fdof)                   #fixed dofs flags
     dof[fdof]=0.
     
     #Collect the linear stiffness / force - vector for reference to solve a linear problem
-    Ks,Fs,_,_,Gauss_pt_global = assembly(lineardof)
-    lineardof[fdof]=sla.spsolve(Ks[np.ix_(fdof,fdof)],-Ks[np.ix_(fdof,nfdof)] @ lineardof[nfdof])
-    Gauss_pt_global=Gauss_pt_global[0].T
+    # Ks,Fs,_,_,Gauss_pt_global,_ = assembly(lineardof)
+    # print('Initial Energy = ',Wfinal_zero)
+    # lineardof[fdof]=sla.spsolve(Ks[np.ix_(fdof,fdof)],-Ks[np.ix_(fdof,nfdof)] @ lineardof[nfdof])
+    # Gauss_pt_global=Gauss_pt_global[0].T
     dofstore=np.zeros(dof.shape)
     
     DfGrn=np.zeros((geom.nSteps+1,conVxy.shape[0],4,NGPts));
@@ -540,11 +552,15 @@ def FESolver2D(numelx,numely,problemtype):
     residualStep = []
     timeStep = []
     timeAssemb = []
+    Wfinal=0
     flag=True
+    _,_,_,_,_,Wfinal_zero=assembly(dof)
+    print('Initial Energy = ',Wfinal_zero)
+    
     for i in range(geom.nSteps):
-        print('Step: ',i)
+        # print('Step: ',i)
         dof[(prescribed_dofs[:,0]).astype(int)]=(i+1)/(geom.nSteps)*prescribed_dofs[:,1]
-        Ks1,Fs1,_,_,_ = assembly(dof)
+        Ks1,Fs1,_,_,_,_ = assembly(dof)
         
 #        print(la.norm(dof,np.inf))
 #        print(la.cond(Ks1[np.ix_(fdof,fdof)].todense()))
@@ -559,7 +575,7 @@ def FESolver2D(numelx,numely,problemtype):
             
             del_dof,res = NewtMG(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof],times=timeNewton,method=1)
             dof[fdof] += del_dof.copy() 
-            Ks1,Fs1,strs,DG,_ = assembly(dof,times=assemb_time)
+            Ks1,Fs1,strs,DG,_,_ = assembly(dof,times=assemb_time)
             normres=la.norm(Fs1[fdof],np.inf)
             print('Residual Norm: {}   Iter: {}   LoadStep: {}'.format(normres,iterNR+1,i+1))
             if normres >= 1.e6:
@@ -580,12 +596,14 @@ def FESolver2D(numelx,numely,problemtype):
         if normres >= 1.e6:
             flag==False
             break
+    _,_,_,_,_,Wfinal = assembly(dof)
+    print('Final Energy = ',Wfinal)
     dofstore = dofstore.T
     conv_VTK = conVxy[:,[0,1,3,2]]
-    # with open('alldata.pkl','wb') as fil:
-        # pckl.dump(residualStep,fil)
-        
-    return dofstore,Strs,DfGrn,meshxy,conv_VTK,zip(timeAssemb,timeStep,residualStep)
+
+    W_total = [Wfinal_zero,Wfinal]
+    print(DfGrn[-1,-1,:,-1])
+    return dofstore,Strs,DfGrn,meshxy,conv_VTK,zip(timeAssemb,timeStep,residualStep,W_total)
 
 
 if __name__ == '__main__':
@@ -593,23 +611,91 @@ if __name__ == '__main__':
 #    check_norm=la.norm(DfGrn[-1,:,-1,:].flatten()-1.5,2)
     import pickle as pckl
     from time import time 
-    
-    
-    N_ELEM_X = 32
-    N_ELEM_Y = 32
-    BC_TYPE = 'UT'
-    W_TYPE = 0
-    dofstore,Strs,DfGrn,meshxy,conv_VTK,time_res = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE)
-
     import os
-    FOLDER_NAME = '{0}_{1}_{2}'.format(W_TYPE, N_ELEM_X * N_ELEM_Y, BC_TYPE)
-    REL_PATH = os.path.join('data', FOLDER_NAME)
-    os.makedirs(os.path.join(os.getcwd(), REL_PATH), exist_ok=True)
-    np.savez('data/{0}/all_data'.format(FOLDER_NAME),
-        dofstore=dofstore, Strs=Strs, DfGrn=DfGrn, meshxy=meshxy, conv_VTK=conv_VTK)
     
-    with open('AlldatMod.pkl','wb') as filname:
-        pckl.dump(time_res,filname)
+    # N_X = 52
+    # N_Y = 32
+    # N_X = np.arange(N_X, 1, -5)
+    # N_Y = np.arange(N_Y, 1, -5)
+    
+    N_X = np.array([2**i for i in range(4,5)],int)
+    N_Y = np.array([2**i for i in range(4,5)],int)
+    BC_TYPE = 'UT_mod'
+    # BC_TYPE = 'UC_fixed_base'
+    # BC_TYPE = 'UT_fixed_base'
+    # BC_TYPE = 'Pure_Shear'
+    # BC_TYPE = 'Simple_Shear'
+    W_TYPE = 0
+    
+    # plt.semilogy(abs())
+    
+    
+    
+    for N_ELEM_X, N_ELEM_Y in zip(N_X, N_Y):
+        dofstore,Strs,DfGrn,meshxy,conv_VTK,residualStep = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE)
+
+
+        FOLDER_NAME = '{0}_{1}_{2}'.format(W_TYPE, N_ELEM_X * N_ELEM_Y, BC_TYPE)
+        REL_PATH = os.path.join('data', FOLDER_NAME)
+        os.makedirs(os.path.join(os.getcwd(), REL_PATH), exist_ok=True)
+        np.savez('data/{0}/all_data'.format(FOLDER_NAME),
+            dofstore=dofstore, Strs=Strs, DfGrn=DfGrn, meshxy=meshxy, conv_VTK=conv_VTK)
+
+        with open('data/{0}/res_data.pkl'.format(FOLDER_NAME), 'wb') as fil:
+            pckl.dump(residualStep, fil)
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    # N_ELEM_X = 32
+    # N_ELEM_Y = 32
+    # BC_TYPE = 'UT_mod'
+    # W_TYPE = 0
+    
+        
+    
+    # # for nx in [2,4,8,16,32]:
+    # #     dofstore,Strs,DfGrn,meshxy,conv_VTK,time_res = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE)
+
+    # import os
+    # FOLDER_NAME = '{0}_{1}_{2}'.format(W_TYPE, N_ELEM_X * N_ELEM_Y, BC_TYPE)
+    # REL_PATH = os.path.join('data', FOLDER_NAME)
+    # os.makedirs(os.path.join(os.getcwd(), REL_PATH), exist_ok=True)
+    # np.savez('data/{0}/all_data'.format(FOLDER_NAME),
+    #     dofstore=dofstore, Strs=Strs, DfGrn=DfGrn, meshxy=meshxy, conv_VTK=conv_VTK)
+    
+    # file_name_pkl = 'AlldatMod.pkl'
+    # X = [trdata for trdata in time_res]
+    # with open(file_name_pkl,'wb') as filname:
+    #     pckl.dump(X,filname)
+    
+    # with open(file_name_pkl,'rb') as rfil:
+    #     data_all=pckl.load(rfil)
+    # data_all=[]
+    # with open('AllDatMod.pkl','rb') as rfil:
+    
+    
 #DfGrn=np.array(DfGrn);LagStrain=np.array(LagStrain);Strs=np.array(Strs)
 #if flag:
 #    for idx,resx in enumerate(residualStep):
