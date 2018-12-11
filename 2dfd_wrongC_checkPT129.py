@@ -54,7 +54,7 @@ ymintickLog=LogLocator(base=10.0,subs=tuple(sptsy),numticks=len(sptsy)+1)
 xmintickLog=LogLocator(base=10.0,subs=tuple(sptsx),numticks=len(sptsx)+1)
 
 ##################################################################
-def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
+def FESolver2D(numelx,numely,problemtype,f_bar,mGType,method_type):
     class geometry() : #1D geometry
         def __init__(self,Eltype):
             self.tolNR=1.e-8
@@ -501,9 +501,18 @@ def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
                                            smooth=smooth)
                 times.append(time()-t0)
                 t1 = time()
-                x= ml.solve(b,x0,tol=1.e-8,maxiter=100,residuals=res)
+                x= ml.solve(b,x0,tol=1.e-8,maxiter=100,accel='cg',residuals=res)
                 times.append(time()-t1)
-        
+            elif method == 2:
+                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+                Bvec = np.vstack((Bx,By)).T
+                t0 = time()
+                ml = pmg.smoothed_aggregation_solver(A,Bvec,smooth = 'energy',strength = 'evolution',aggregate = 'naive',max_coarse = 50,max_levels=15)
+                times.append(time()-t0)
+                t1 = time()
+                x = ml.solve(b,x0,tol=1.e-8,maxiter=100,residuals=res)
+                times.append(time()-t1)
         elif mlType is 'RS':
             if method == 0:
                 t0 = time()
@@ -513,9 +522,9 @@ def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
                 x = ml.solve(b,x0,residuals=res)
                 times.append(time()-t1)
             elif method == 1:
-                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
-                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
-                Bvec = np.vstack((Bx,By)).T
+#                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+#                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+#                Bvec = np.vstack((Bx,By)).T
                 smooth=('energy', {'krylov': 'cg', 'maxiter': 50, 'degree': 8, 'weighting': 'local'})
                 t0 = time()
                 ml = pmg.classical.ruge_stuben_solver(A,strength=('evolution'), 
@@ -524,7 +533,17 @@ def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
                     max_levels=50, max_coarse=50)
                 times.append(time()-t0)
                 t1 = time()
-                x =  ml.solve(b,x0,tol=1.e-8,maxiter=100,residuals=res)
+                x =  ml.solve(b,x0,tol=1.e-8,maxiter=100,accel='cg',residuals=res)
+                times.append(time()-t1)
+            elif method == 2:
+                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+                Bvec = np.vstack((Bx,By)).T
+                t0 = time()
+                ml = pmg.classical.ruge_stuben_solver(A,strength = 'evolution',max_coarse = 50,max_levels=15)
+                times.append(time()-t0)
+                t1 = time()
+                x = ml.solve(b,x0,tol=1.e-8,maxiter=100,residuals=res)
                 times.append(time()-t1)
         elif mlType is 'ASA':
             if method == 0:
@@ -542,10 +561,20 @@ def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
                 #ml = pmg.smoothed_aggregation_solver(Ks1[np.ix_(fdof,fdof)], Bvec, strength='evolution', max_coarse=50,
                 #                           smooth=smooth)
                 t0 = time()
-                mlsa,work=adaptive_sa_solver(A,initial_candidates=Bvec)
+                mlsa,work=adaptive_sa_solver(A,initial_candidates=Bvec,num_candidates=5,improvement_iters=5,aggregate='naive')
                 times.append(time()-t0)
                 t1 =time()
                 x =  mlsa.solve(b,x0,tol=1.e-8,maxiter=100,accel='cg',residuals=res)
+                times.append(time()-t1)
+            elif method == 2:
+                Bx = np.kron(np.ones(Fs1.size//2),[0,1])[fdof]
+                By = np.kron(np.ones(Fs1.size//2),[1,0])[fdof]
+                Bvec = np.vstack((Bx,By)).T
+                t0 = time()
+                mlsa,work=adaptive_sa_solver(A,initial_candidates=Bvec,num_candidates=5,improvement_iters=5,aggregate='naive')
+                times.append(time()-t0)
+                t1 =time()
+                x =  mlsa.solve(b,x0,tol=1.e-8,maxiter=100,residuals=res)
                 times.append(time()-t1)
         return x,res    
     
@@ -594,7 +623,12 @@ def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
     _,_,_,_,_,Wfinal_zero=assembly(dof)
     print('Initial Energy = ',Wfinal_zero)
     print('\nNumber of Elems in each direction: ',numelx)
-    print('\nImplementing '+mGType)
+    if method_type == 'solver':
+        method_idx = 2
+    elif method_type == 'precond':
+        method_idx = 1
+    print('\nImplementing '+mGType+' with MG as '+method_type)
+
     for i in range(geom.nSteps):
         print('\nStep: ',i)
         dof[(prescribed_dofs[:,0]).astype(int)]=(i+1)/(geom.nSteps)*prescribed_dofs[:,1]
@@ -615,7 +649,7 @@ def FESolver2D(numelx,numely,problemtype,f_bar,mGType):
                 del_dof_zer = np.ones(Fs1[fdof].shape[0])
             else: 
                 del_dof_zer = del_dof.copy()
-            del_dof,res = NewtMG(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof],del_dof_zer,times=timeNewton,mlType=mGType)
+            del_dof,res = NewtMG(Ks1[np.ix_(fdof,fdof)],-Fs1[fdof],del_dof_zer,times=timeNewton,mlType=mGType,method=method_idx)
             rhoiter = np.prod(np.array(res[1:])/np.array(res[:-1]))**(1./(len(res[1:])+1))
             rhoN.append(rhoiter)
             dof[fdof] += del_dof.copy() 
@@ -685,7 +719,8 @@ if __name__ == '__main__':
     N_X = np.array([2**i for i in range(5,6)],int)
     N_Y = np.array([2**i for i in range(5,6)],int)
     BC_TYPE = 'Pure_Shear'
-    mlT = ['ASA','RS','SA']
+    mlT = ['DS','ASA','RS','SA']
+    MType = ['solver','precond']
     # BC_TYPE = 'UC_fixed_base'
     # BC_TYPE = 'UT_fixed_base'
     # BC_TYPE = 'Pure_Shear'
@@ -697,22 +732,23 @@ if __name__ == '__main__':
     N_ELEM_X = 32
     N_ELEM_Y = 32
     for mlt in mlT:
+        for mtype in MType:
 #    for N_ELEM_X, N_ELEM_Y in zip(N_X, N_Y):
-        dofstore,Strs,DfGrn,meshxy,conv_VTK,time_res = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE,stretch_factor,mlt)
-
-
-        FOLDER_NAME = '{0}_{1}_{2}_{3}'.format(W_TYPE, N_ELEM_X * N_ELEM_Y, BC_TYPE,mlt)
-        REL_PATH = os.path.join('data', FOLDER_NAME)
-        os.makedirs(os.path.join(os.getcwd(), REL_PATH), exist_ok=True)
-        np.savez('data/{0}/all_data_default'.format(FOLDER_NAME),
-            dofstore=dofstore, Strs=Strs, DfGrn=DfGrn, meshxy=meshxy, conv_VTK=conv_VTK)
-        
-        X = [trdata for trdata in time_res]
-        with open('data/{0}/res_data_default.pkl'.format(FOLDER_NAME), 'wb') as fil:
-            pckl.dump(X, fil)
+            dofstore,Strs,DfGrn,meshxy,conv_VTK,time_res = FESolver2D(N_ELEM_X, N_ELEM_Y, BC_TYPE,stretch_factor,mlt,mtype)
+    
+    
+            FOLDER_NAME = r'{0}_{1}_{2}_{3}'.format(W_TYPE, N_ELEM_X * N_ELEM_Y, BC_TYPE,mlt)
+            REL_PATH = os.path.join('data', FOLDER_NAME)
+            os.makedirs(os.path.join(os.getcwd(), REL_PATH), exist_ok=True)
+            np.savez(r'data/{0}/all_data_best_{1}'.format(FOLDER_NAME,mtype),
+                dofstore=dofstore, Strs=Strs, DfGrn=DfGrn, meshxy=meshxy, conv_VTK=conv_VTK)
             
-        with open('data/{0}/res_data_default.pkl'.format(FOLDER_NAME), 'rb') as rfil:
-            alldata=pckl.load(rfil)
+            X = [trdata for trdata in time_res]
+            with open(r'data/{0}/res_data_best_{1}.pkl'.format(FOLDER_NAME,mtype), 'wb') as fil:
+                pckl.dump(X, fil)
+                
+            with open(r'data/{0}/res_data_best_{1}.pkl'.format(FOLDER_NAME,mtype), 'rb') as rfil:
+                alldata=pckl.load(rfil)
         
         
 #        data_steps = np.array(alldata)[[4,14,24,34,44],:]
